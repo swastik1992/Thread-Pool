@@ -23,11 +23,12 @@ public:
 				{
 
 					std::function<void()> task;
-
 					{
-					//use unique lock since we are using conditional variable.
-					std::unique_lock<std::mutex> lock(this->tasksMutex);
-					
+						//use unique lock since we are using conditional variable.
+						std::unique_lock<std::mutex> lock(this->tasksMutex);
+
+						this->cond.wait(lock, [this]() { return !this->tasks.empty(); });
+
 						task = std::move(this->tasks.front());
 						this->tasks.pop();
 					}
@@ -48,13 +49,24 @@ public:
 	}
 
 	template<class T, class... Args>
-	void AddTask(T&& function, Args&&... arguments)
+	auto AddTask(T&& function, Args&&... arguments)-> std::future<typename std::result_of<T(Args...)>::type>
 	{
+		using returnType = typename std::result_of<T(Args...)>::type;
+
 		//create a shared pointer of type packaged task using the incoming function and it's arguments. (use std::bind to bind the parameters since we 
 		//already know the arguments. use std::forward since we want to keep the objects as it was send by the user.
-		
-		auto task = std::make_shared< std::packaged_task<int()> >(std::bind(std::forward<T>(function), std::forward<Args>(arguments)...));
+		//save the shared pointer as a lamda (std::function) in tasks. Get the future pointer from packaged task and return it.
 
+		auto task = std::make_shared< std::packaged_task<returnType()> >(std::bind(std::forward<T>(function), std::forward<Args>(arguments)...));
+		std::future<returnType> result = task->get_future();
+		{
+			std::unique_lock<std::mutex> lock(this->tasksMutex);
+			
+			tasks.emplace([task]() { (*task)(); });
+		}
+		cond.notify_one();
+
+		return result;
 	}
 
 private:
@@ -65,6 +77,8 @@ private:
 	std::queue<std::function<void()>> tasks;
 
 	std::mutex tasksMutex;
+
+	std::condition_variable cond;
 };
 
 
