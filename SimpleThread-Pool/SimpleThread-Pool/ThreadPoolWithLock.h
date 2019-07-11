@@ -7,69 +7,64 @@
 #include <queue>
 #include <functional>
 
-class ThreadPoolV1
+class ThreadPoolWithLock
 {
 public:
-	ThreadPoolV1(size_t size);
 
-	~ThreadPoolV1();
+	ThreadPoolWithLock(size_t numOfThreads = 4)
+	{
+		//create threads and let it run indefnitely and always be looking for a task to take from queue.
+		for (size_t i = 0; i < numOfThreads; ++i)
+		{
+			//emplace_back : more efficient. No temporary object creation, instead uses forward.
+			threads.emplace_back([this]() {
 
-	template<class T, class... Args >
-	auto AddTask(T&& t, Args&&... args)->std::future<typename std::result_of<T(Args...)>::type>;
+				for (;;)
+				{
+
+					std::function<void()> task;
+
+					{
+					//use unique lock since we are using conditional variable.
+					std::unique_lock<std::mutex> lock(this->tasksMutex);
+					
+						task = std::move(this->tasks.front());
+						this->tasks.pop();
+					}
+
+					task();
+
+				}
+			});
+		}
+	}
+
+	~ThreadPoolWithLock()
+	{
+		for (size_t i = 0; i < threads.size(); ++i)
+		{
+			threads[i].join();
+		}
+	}
+
+	template<class T, class... Args>
+	void AddTask(T&& function, Args&&... arguments)
+	{
+		//create a shared pointer of type packaged task using the incoming function and it's arguments. (use std::bind to bind the parameters since we 
+		//already know the arguments. use std::forward since we want to keep the objects as it was send by the user.
+		
+		auto task = std::make_shared< std::packaged_task<int()> >(std::bind(std::forward<T>(function), std::forward<Args>(arguments)...));
+
+	}
 
 private:
 
-	std::vector<std::thread> workers;
+	std::vector<std::thread> threads;
 
+	//@todo read more about std::function.
 	std::queue<std::function<void()>> tasks;
-	std::mutex mutex;
+
+	std::mutex tasksMutex;
 };
-
-ThreadPoolV1::ThreadPoolV1(size_t size)
-{
-	for (size_t i = 0; i < size; i++)
-	{
-		workers.emplace_back(
-			[this]()
-		{
-			for (;;)
-			{
-				std::function<void()> task;
-				{
-					std::lock_guard<std::mutex> lock(this->mutex);
-					task = std::move(tasks.front());
-					tasks.pop();
-				}
-
-				task();
-			}
-		}
-
-		);
-	}
-}
-
-ThreadPoolV1::~ThreadPoolV1()
-{
-	for (std::thread &t : workers)
-	{
-		t.join();
-	}
-}
-
-template<class T, class... Args >
-auto ThreadPoolV1::AddTask(T&& t, Args&&... args)->std::future<typename std::result_of<T(Args...)>::type>
-{
-	using returnType = typename std::result_of<T(Args...)>::type;
-	auto task = std::make_shared<std::packaged_task<returnType()>>(std::bind(std::forward<T>(t), std::forward<Args>(args)...));
-
-	std::future<returnType> result = task->get_future();
-	{
-		std::lock_guard<std::mutex> lock(mutex);
-
-		tasks.emplace([task]() {(*task)(); });
-	}
-	return result;
-}
 
 
